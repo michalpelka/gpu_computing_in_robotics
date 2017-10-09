@@ -196,7 +196,12 @@ bool initGL(int *argc, char **argv)
 
     return true;
 }
-
+void reshape(int width, int height) {
+    glViewport(0, 0, width, height);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    gluPerspective(60.0, (GLfloat)width / (GLfloat) height, 0.01, 10000.0);
+}
 void display()
 {
 	glPointSize(pointSize);
