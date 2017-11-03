@@ -23,7 +23,7 @@
 //common
 #include "data_model.hpp"
 #include "point_types.h"
-
+#include "cudaWrapper.h"
 float colors[16][3] =
 		{1.0f, 0.0f, 0.0f,
 		0.0f, 1.0f, 0.0f,
@@ -57,7 +57,8 @@ pcl::PointCloud<Semantic::PointXYZL> winning_point_cloud;
 
 typedef struct scan_with_odo
 {
-	pcl::PointCloud<Semantic::PointXYZL> scan;
+	pcl::PointCloud<pcl::PointXYZ>  scan;
+
 	Eigen::Affine3f odo;
 }scan_with_odo_t;
 
@@ -66,7 +67,7 @@ std::vector<scan_with_odo_t> vscan_with_odo;
 float motion_model_max_angle = 10.0f;
 float motion_model_max_translation = 0.5f;
 float max_particle_size = 500;
-float max_particle_size_kidnapped_robot = 100000;
+float max_particle_size_kidnapped_robot = 1000;
 float distance_above_Z = 1.0f;
 float rgd_resolution = 1.0f;
 int cuda_device = 0;
@@ -89,6 +90,49 @@ void motion(int x, int y);
 void printHelp();
 void singleIteration();
 
+
+
+void classify (pcl::PointCloud<pcl::PointXYZ>in, pcl::PointCloud<Semantic::PointXYZL>&out)
+{
+	float normal_vectors_search_radius = 1.0f;
+	float curvature_threshold = 5;
+	float ground_Z_coordinate_threshold = -0.5f;
+	int number_of_points_needed_for_plane_threshold =1;
+	int max_number_considered_in_INNER_bucket = 100;
+	int max_number_considered_in_OUTER_bucket = 100;
+
+	CCudaWrapper ccWraper;
+
+	ccWraper.downsampling(in,0.2);
+
+	 pcl::PointCloud<Semantic::PointXYZNL> data;
+	 data.resize(in.size());
+	 for (int i =0; i< in.size(); i++)
+	 {
+		 data[i].x = in[i].x;
+		 data[i].y = in[i].y;
+		 data[i].z = in[i].z;
+	 }
+	 ccWraper.classify(
+			data,
+			data.size(),
+			normal_vectors_search_radius,
+			curvature_threshold,
+			ground_Z_coordinate_threshold,
+			number_of_points_needed_for_plane_threshold,
+			max_number_considered_in_INNER_bucket,
+			max_number_considered_in_OUTER_bucket );
+
+	 out.resize(data.size());
+	 for (int i =0; i< data.size(); i++)
+	 {
+		 out[i].x = data[i].x;
+		 out[i].y = data[i].y;
+		 out[i].z = data[i].z;
+		 out[i].label = data[i].label;
+
+	 }
+}
 int main(int argc, char **argv)
 {
 	std::cout << "use case: particle filter localization fast" << std::endl;
@@ -127,12 +171,16 @@ int main(int argc, char **argv)
 			return -1;
 		}
 
-		if(pcl::io::loadPCDFile(argv[1], point_cloud_semantic_map) == -1)
+
+		pcl::PointCloud<pcl::PointXYZ> pointcloud_notlabeled;
+
+		if(pcl::io::loadPCDFile(argv[1],point_cloud_semantic_map) == -1)
 		{
 			std::cout << "return -1" << std::endl;
 			return -1;
 		}
 
+		//classify(pointcloud_notlabeled, point_cloud_semantic_map);
 		ind_pcd = pcl::console::parse_file_extension_argument (argc, argv, ".xml");
 
 		if(ind_pcd.size()!=1)
@@ -165,7 +213,8 @@ int main(int argc, char **argv)
 					exit(-1);
 				}else
 				{
-					vscan_with_odo.push_back(swo);
+
+       				vscan_with_odo.push_back(swo);
 					std::cout << "file " << fn << " loaded" << std::endl;
 				}
 			}
@@ -458,7 +507,13 @@ void singleIteration()
 
 		Eigen::Affine3f odometryIncrement = vscan_with_odo[counter-1].odo.inverse() * vscan_with_odo[counter].odo;
 
-		if(!particle_filter.copyCurrentScanToGPU(vscan_with_odo[counter].scan))
+		pcl::PointCloud<pcl::PointXYZ> data = vscan_with_odo[counter].scan;
+
+		pcl::PointCloud<Semantic::PointXYZL> labeled;
+
+		classify(data,labeled);
+
+		if(!particle_filter.copyCurrentScanToGPU(labeled))
 		{
 			std::cout << "problem with cuda_nn.copyCurrentScanToGPU(current_scan) return" << std::endl;
 			return;
@@ -470,7 +525,7 @@ void singleIteration()
 
 		if(show_winning_point_cloud)
 		{
-			winning_point_cloud = vscan_with_odo[counter].scan;
+			winning_point_cloud = labeled;
 			transformPointCloud(winning_point_cloud, winning_point_cloud, winM);
 		}
 		particle_filter.prediction(odometryIncrement);
